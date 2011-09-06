@@ -1,0 +1,277 @@
+<?php
+// $Id$
+
+/**
+ * Implementation of hook_init
+ */
+function sina_weibo_init() {
+  $menu = menu_get_item();
+  if(module_exists('imagefield')) {
+    module_load_include('inc', 'sina_weibo', 'sina_weibo.pic');
+  }
+}
+
+/**
+ * Implementation of hook_meu()
+ */
+function sina_weibo_menu() {
+  $items = array();
+
+  $items['sina-weibo/callback'] = array(
+    'access callback' => TRUE,
+    'page callback' => 'sina_weibo_callback',
+    'type' => MENU_CALLBACK,
+    'file' => 'sina_weibo.pages.inc',
+  );
+  $items['sina-weibo/login'] = array(
+    'access callback' => TRUE,
+    'page callback' => 'sina_weibo_login',
+    'type' => MENU_CALLBACK,
+    'file' => 'sina_weibo.pages.inc',
+  );
+
+
+  $items['user/register/sina-weibo'] = array(
+    'access callback' => 'user_register_access',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('user_register'),
+    'title' => 'Create Local Account',
+    'type' => MENU_CALLBACK,
+    'file' => 'sina_weibo.pages.inc',
+  );
+  $items['user/login/sina-weibo'] = array(
+    'access callback' => 'user_is_anonymous',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('user_login'),
+    'title' => t('Login'),
+    'type' => MENU_CALLBACK,
+    'file' => 'sina_weibo.pages.inc',
+  );
+
+
+  $items['admin/settings/sina-weibo'] = array(
+    'title' => 'Weibo setup',
+    'description' => 'Sina Weibo module settings',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('sina_weibo_admin_form'),
+    'access arguments' => array('administer site configuration'),
+    'file' => 'sina_weibo.admin.inc'
+  );
+  
+  /*$items['admin/settings/sina-weibo/default'] = array(
+    'title' => 'Sina Weibo',
+    'type' => MENU_DEFAULT_LOCAL_TASK
+  );*/
+  return $items;
+}
+
+/**
+ * Implementation of hook_perm()
+ */
+function sina_weibo_perm() {
+  return array('add sina weibo accounts');
+}
+
+/**
+ * Implementation of hook_cron()
+ *
+ */
+function sina_weibo_cron() {
+}
+
+/**
+ * Implementation of hook_form_FORM_ID_alter
+ */
+function sina_weibo_form_user_login_alter(&$form, $form_state) {
+  if(variable_get('sina_weibo_api_key', '') && variable_get('sina_weibo_api_secret', '')) {
+    $form['sina_weibo_signin'] = array(
+      '#type' => 'markup',
+      '#value' => theme_sina_weibo_signin()
+    );
+  }
+}
+
+/**
+ * Implementation of hook_form_FORM_ID_alter
+ */
+function sina_weibo_form_user_register_alter(&$form, $form_state) {
+  if(arg(0) == 'user' && arg(1) == 'register' && arg(2) == 'sina-weibo') {
+    $form['name']['#default_value'] = $_SESSION['sina_weibo_token']['screen_name'];
+    $form['#submit'][] = 'sina_weibo_register_submit';
+  }
+}
+
+function theme_sina_weibo_signin() {
+  return '<div class="sina-weibo-signin">' . l(theme('image', drupal_get_path('module', 'sina_weibo') . '/images/24.png', '', '', array(), FALSE), 'sina-weibo/login', array('html' => TRUE)) . '</div>';
+}
+
+/**
+ * Implementation of hook_user
+ */
+function sina_weibo_user($op, &$edit, &$account, $category = NULL) {
+  switch ($op) {
+    case 'load':
+      $sina_weibo = db_fetch_array(db_query('SELECT * FROM {weibo_sina_users} WHERE uid = %d', $account->uid));
+      if($sina_weibo) {
+        $account->sina_weibo = $sina_weibo;
+      }
+      break;
+    case 'delete':
+      db_query('DELETE FROM {weibo_sina_users} WHERE uid=%d', $account->uid);
+      break;
+  }
+}
+
+/**
+ * Implementation of hook_form_alter
+ */
+function sina_weibo_form_alter(&$form, $form_state, $form_id) {
+  global $user;
+  if($form['#node'] && $form['#node']->type . '_node_form' == $form_id && in_array($form['#node']->type, variable_get('sina_weibo_node_types', array())) && user_load($user->uid)->sina_weibo) {
+    if(!$form['social']) {
+      $form['social'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Social network publishing'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+        '#tree' => TRUE
+      );
+      $form['social']['check_all'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Post to all'),
+        '#description' => t('Check to send the message to all available social media services'),
+      );
+      if($form['#node']->nid) {
+        $form['social']['append_url'] = array(
+          '#type' => 'checkbox',
+          '#title' => t('Append the URL of current post to the message'),
+        );
+      }
+      $form['social']['message'] = array(
+        '#type' => 'textarea',
+        '#title' => t('Message'),
+        '#description' => t('Please input the message you would like to post on all social media websites. You can also customize the message for each specific social networking sites below. If you leave this field blank, it will use the node title as the message.'),
+      );
+    }
+    $form['social']['sina'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Sina Weibo'),
+      '#collapsible' => TRUE,
+      '#collapsed' => FALSE,
+      '#tree' => TRUE
+    );
+    $form['social']['sina']['allowed'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Post to Sina Weibo'),
+      '#attributes' => array('class' => 'social-allowed'),
+    );
+    $form['social']['sina']['customized'] = array(
+      '#type' => 'textarea',
+      '#title' => t('Message specifically for Sina Weibo'),
+      '#description' => t('Leave blank to use the global message'),
+      '#attributes' => array('class' => 'social-specific-msg', 'onkeyup' => '$("input[name=\'social[sina][allowed]\']").attr("checked", true);'),
+    );
+    $form['social']['sina']['image'] = array(
+      '#type' => 'textfield',
+      '#title' => t('URL of image to attach'),
+    );
+    $form['social']['sina']['copy_global'] = array(
+      '#type' => 'button',
+      '#value' => t('Copy from global message'),
+      '#description' => t('Use global message'),
+      '#attributes' => array('onclick' => '$("textarea[name=\'social[sina][customized]\']").val($("textarea[name=\'social[message]\']").val());return false;'),
+    );
+    // For previews
+    if($form_state) {
+      if($form['#node']->nid) {
+        $form['social']['append_url']['#default_value'] = $form_state['values']['social']['append_url'];
+      }
+      // saved node
+      if($form['#node']->title) {
+        $form['social']['message']['#default_value'] = $form['#node']->title;
+      }
+
+      if($form_state['values']['social']['message']) {
+        $form['social']['message']['#default_value'] = $form_state['values']['social']['message'];
+      }
+      $form['social']['sina']['allowed']['#default_value'] = $form_state['values']['social']['sina']['allowed'];
+      $form['social']['sina']['customized']['#default_value'] = $form_state['values']['social']['sina']['customized'];
+    }
+    $form['#validate'][] = 'sina_weibo_post_validate';
+    $form['#submit'][] = 'sina_weibo_post_submit';
+    $form['#after_build'][] = 'sina_weibo_post_after_build';
+  }
+}
+
+function _get_sina_message($global_msg, $customized_msg, $append_url = NULL, $nid = NULL) {
+  // @TODO: add append_url feature
+  if($nid) {
+    global $user;
+    $account = user_load($user->uid);
+    $c = new WeiboClient(variable_get('sina_weibo_api_key', '') , variable_get('sina_weibo_api_secret', ''), $account->sina_weibo['oauth_token'] , $account->sina_weibo['oauth_token_secret']);
+    $st = $c->shorten_url(url('node/' . $nid, array('absolute' => TRUE)));
+    if(!sina_weibo_check_error($st)) {
+      $short_url = ' ' . $st[0]['url_short'];
+    }
+  }
+  if($customized_msg) {
+    return $customized_msg . $short_url;
+  }
+  else {
+    return $global_msg . $short_url;
+  }
+}
+
+function sina_weibo_post_validate($form, $form_state) {
+  if($form_state['values']['social']['sina']['allowed']) {
+    if(!valid_url($form_state['values']['social']['sina']['image'])) {
+      form_set_error('social[sina][image]', t('Please enter the valid url for Sina Weibo Image'));
+    }
+  }
+}
+
+function sina_weibo_post_submit($form, $form_state) {
+  // Post weibo
+  if($form_state['values']['op'] == t('Save') && $form_state['values']['social']['sina']['allowed']) {
+    $msg = _get_sina_message($form_state['values']['social']['message'], $form_state['values']['social']['sina']['customized'], $form_state['values']['social']['append_url'], $form['#node']->nid);
+    global $user;
+    $account = user_load($user->uid);
+    $c = new WeiboClient(variable_get('sina_weibo_api_key', '') , variable_get('sina_weibo_api_secret', ''), $account->sina_weibo['oauth_token'] , $account->sina_weibo['oauth_token_secret']);
+    $result = $c->update($msg);
+    sina_weibo_check_error($result);
+  }
+}
+
+if(!function_exists('load_social_post_js')) {
+  function load_social_post_js() {
+    static $loaded = NULL;
+    if(!$loaded) {
+      drupal_add_js(drupal_get_path('module', 'sina_weibo') . '/sina_weibo.post.js');
+      $loaded = TRUE;
+    }
+  }
+}
+function sina_weibo_post_after_build($element) {
+  load_social_post_js();
+  return $element;
+}
+
+/**
+ * Implementatino of hook_autoload_info_alter
+ */
+function sina_weibo_autoload_info_alter() {
+  $classes['WeiboOAuth']['file'] = 'sina_weibo.lib.php';
+  $classes['WeiboClient']['file'] = 'sina_weibo.lib.php';
+}
+
+/**
+ * Error handling
+ */
+function sina_weibo_check_error($result) {
+  if($result['error_code']) {
+    watchdog('weibo_sina', $result['error'], $result);
+    drupal_set_message(t('Internal error, please contact site administrator.'), 'error');
+    return $result['error_code'];
+  }
+  return FALSE;
+}

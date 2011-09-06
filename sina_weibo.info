@@ -1,0 +1,7 @@
+; $Id$
+name = Sina Weibo
+description = Provide integration functionality with Sina Weibo
+dependencies[] = oauth_common
+package = Social Networking
+core = 6.x
+files[] = sina_weibo.lib.php
